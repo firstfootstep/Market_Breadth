@@ -17,16 +17,31 @@ def get_rs_data():
         'net_income_qoq_growth_fq', 'net_income_yoy_growth_fq', 'type'
     ]
     
-    q = (Query()
-         .select(*columns)
-         .set_markets('thailand')
-         .limit(3000)
-         .get_scanner_data())
+    try:
+        q = (Query()
+             .select(*columns)
+             .set_markets('thailand')
+             .limit(3000)
+             .get_scanner_data())
+    except Exception as e:
+        print(f"❌ Error fetching data: {e}")
+        return pd.DataFrame()
     
     if not q:
         return pd.DataFrame()
     
-    df = pd.DataFrame([row['d'] for row in q])
+    # --- FIX: แก้ไขตรงนี้ (Handle tuple return) ---
+    # ถ้า q เป็น tuple (count, data) ให้เอาตัวที่ 2 (index 1)
+    if isinstance(q, tuple):
+        data_rows = q[1]
+    else:
+        data_rows = q
+        
+    if not data_rows:
+        return pd.DataFrame()
+
+    # สร้าง DataFrame จาก list of dictionaries
+    df = pd.DataFrame([row['d'] for row in data_rows])
     
     # กรองหุ้น: ตัด -R, -F, ราคา >= 1 บาท, เอาเฉพาะ Stock และ DR
     mask = (
@@ -50,6 +65,7 @@ def get_rs_data():
     labels = ['RS Below 80', 'RS80-85', 'RS85-90', 'RS90-95', 'RS95-100']
     df['rs_category'] = pd.cut(df['rs_rank'], bins=bins, labels=labels)
     
+    print(f"✅ ดึงข้อมูลสำเร็จ: {len(df)} หุ้น")
     return df
 
 def get_dr_data(df_all):
@@ -59,20 +75,31 @@ def get_dr_data(df_all):
     try:
         df_map = pd.read_csv(url)
     except:
+        print("⚠️ ไม่สามารถดึง Google Sheet Mapping ได้ (ใช้ข้อมูลดิบแทน)")
         df_map = pd.DataFrame(columns=['Symbol', 'Underlying', 'Country'])
 
     # กรองเฉพาะ DR
+    if df_all.empty:
+        return pd.DataFrame()
+
     df_dr = df_all[df_all['type'] == 'dr'].copy()
     
     # Merge
-    df_merged = pd.merge(
-        df_dr, df_map[['Symbol', 'Underlying', 'Country']],
-        left_on='name', right_on='Symbol', how='left'
-    )
+    if not df_map.empty:
+        df_merged = pd.merge(
+            df_dr, df_map[['Symbol', 'Underlying', 'Country']],
+            left_on='name', right_on='Symbol', how='left'
+        )
+    else:
+        df_merged = df_dr
+        df_merged['Country'] = 'Unknown'
+        df_merged['Underlying'] = '-'
     
     # เติมค่าว่าง
-    df_merged['Country'] = df_merged['Country'].fillna('Unknown')
-    df_merged['Underlying'] = df_merged['Underlying'].fillna('-')
+    if 'Country' in df_merged.columns:
+        df_merged['Country'] = df_merged['Country'].fillna('Unknown')
+    if 'Underlying' in df_merged.columns:
+        df_merged['Underlying'] = df_merged['Underlying'].fillna('-')
     
     return df_merged
 
@@ -81,8 +108,9 @@ def get_dr_data(df_all):
 # ==========================================
 
 def format_df(df, cols_to_keep, rename_dict):
-    # เลือก Column
-    df_out = df[cols_to_keep].copy()
+    # เลือก Column (เฉพาะที่มีอยู่จริง กัน Error)
+    valid_cols = [c for c in cols_to_keep if c in df.columns]
+    df_out = df[valid_cols].copy()
     
     # ปัดทศนิยม 2 ตำแหน่ง
     for c in df_out.columns:
@@ -101,6 +129,10 @@ def main():
     # 1. เตรียมข้อมูล
     df_raw = get_rs_data()
     
+    if df_raw.empty:
+        print("❌ ไม่พบข้อมูลหุ้น จบการทำงาน")
+        return
+
     # --- ตาราง RS Ranking ---
     rs_cols = [
         'name', 'sector', 'close', 'change', 'volume', 
@@ -125,11 +157,15 @@ def main():
         'name': 'Symbol', 'sector': 'Sector', 'close': 'Price', 'change': '%Change',
         'Perf.1M': '1M %', 'Perf.3M': '3M %'
     }
-    df_dr_final = format_df(df_dr_raw, dr_cols, dr_rename)
+    
+    if not df_dr_raw.empty:
+        df_dr_final = format_df(df_dr_raw, dr_cols, dr_rename)
+        table_dr_html = df_dr_final.to_html(index=False, table_id="drTable", classes="display compact", border=0)
+    else:
+        table_dr_html = "<p>ไม่พบข้อมูล DR</p>"
 
     # 2. แปลงเป็น HTML Table (Clean)
     table_rs_html = df_rs_final.to_html(index=False, table_id="rsTable", classes="display compact", border=0)
-    table_dr_html = df_dr_final.to_html(index=False, table_id="drTable", classes="display compact", border=0)
 
     # 3. เขียนไฟล์ HTML Template (ฝัง JS DataTables เพื่อให้เสิช/กรองได้)
     html_content = f"""
