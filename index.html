@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SET Market Breadth</title>
+    <style>
+        body { font-family: 'Sarabun', sans-serif; margin: 0; display: flex; min-height: 100vh; background-color: #f9f9f9; }
+        
+        /* แถบเมนูซ้าย */
+        .sidebar { width: 250px; background-color: #2c3e50; color: white; padding: 20px; position: fixed; height: 100%; }
+        .sidebar h2 { margin-bottom: 30px; border-bottom: 2px solid #34495e; padding-bottom: 10px; }
+        .menu-item { display: block; padding: 15px; color: #ecf0f1; text-decoration: none; margin-bottom: 5px; border-radius: 5px; transition: 0.3s; }
+        .menu-item:hover { background-color: #34495e; }
+        .menu-item.active { background-color: #1abc9c; font-weight: bold; }
+
+        /* ส่วนเนื้อหาขวา */
+        .content { margin-left: 250px; padding: 40px; width: 100%; }
+        .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        img { max-width: 100%; height: auto; border-radius: 5px; }
+        h1 { color: #2c3e50; }
+        .update-time { color: gray; font-size: 0.9em; margin-bottom: 20px; }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <div class="sidebar">
+        <h2>📊 My Stock Bot</h2>
+        <a href="#home" class="menu-item active">🏠 หน้าแรก (SET Breadth)</a>
+        <a href="#stocks" class="menu-item">📈 หุ้นรายตัว (Coming Soon)</a>
+        <a href="#note" class="menu-item">📝 บันทึกช่วยจำ</a>
+        <a href="#about" class="menu-item">ℹ️ เกี่ยวกับผู้ทำ</a>
+    </div>
+
+    <div class="content">
+        <div class="card" id="home">
+            <h1>ภาวะตลาด SET Index (Market Breadth)</h1>
+            <p class="update-time">อัปเดตข้อมูลล่าสุด: วันนี้</p>
+            <hr>
+            <img src="dashboard.png" alt="SET Chart">
+        </div>
+
+        <div class="card" id="note">
+            <h2>📝 บันทึก</h2>
+            <p>เอาไว้จดบันทึกแผนเทรด หรือไอเดียหุ้นที่น่าสนใจ...</p>
+        </div>
+    </div>
+
+</body>
+</html>
