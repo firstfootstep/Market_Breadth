@@ -8,7 +8,6 @@ from tradingview_screener import Query, col
 
 def get_rs_data():
     print("⏳ กำลังดึงข้อมูลหุ้นไทยเพื่อคำนวณ RS...")
-    # เลือก Column ตามที่คุณต้องการ
     columns = [
         'name', 'sector', 'close', 'change', 'volume',
         'EMA10', 'EMA50', 'market_cap_basic',
@@ -27,23 +26,42 @@ def get_rs_data():
         print(f"❌ Error fetching data: {e}")
         return pd.DataFrame()
     
-    if not q:
-        return pd.DataFrame()
-    
-    # --- FIX: แก้ไขตรงนี้ (Handle tuple return) ---
-    # ถ้า q เป็น tuple (count, data) ให้เอาตัวที่ 2 (index 1)
-    if isinstance(q, tuple):
-        data_rows = q[1]
-    else:
-        data_rows = q
-        
-    if not data_rows:
+    if q is None:
         return pd.DataFrame()
 
-    # สร้าง DataFrame จาก list of dictionaries
-    df = pd.DataFrame([row['d'] for row in data_rows])
-    
+    # --- FIX START: แก้ไขการจัดการข้อมูลที่ส่งกลับมา ---
+    # 1. แกะข้อมูลออกจาก Tuple (ถ้ามี)
+    if isinstance(q, tuple):
+        raw_data = q[1]
+    else:
+        raw_data = q
+
+    # 2. แปลงเป็น DataFrame อย่างระมัดระวัง
+    if isinstance(raw_data, pd.DataFrame):
+        # กรณีที่ Library ส่ง DataFrame มาให้เลย
+        if raw_data.empty:
+            return pd.DataFrame()
+        df = raw_data.copy()
+    else:
+        # กรณีที่เป็น List
+        if not raw_data:
+            return pd.DataFrame()
+        
+        # ลองแปลง List เป็น DataFrame
+        try:
+            # แบบปกติ: ข้อมูลซ่อนอยู่ใน key 'd'
+            df = pd.DataFrame([row['d'] for row in raw_data])
+        except (KeyError, TypeError):
+            # แบบสำรอง: ข้อมูลมาเป็น dict เลย
+            df = pd.DataFrame(raw_data)
+    # --- FIX END ---
+
     # กรองหุ้น: ตัด -R, -F, ราคา >= 1 บาท, เอาเฉพาะ Stock และ DR
+    # ต้องเช็คก่อนว่ามี column ครบไหม
+    if 'name' not in df.columns or 'close' not in df.columns:
+        print("❌ Data format error: Columns not found")
+        return pd.DataFrame()
+
     mask = (
         (~df['name'].str.endswith(('-R', '-F'))) & 
         (df['close'] >= 1) &
@@ -70,7 +88,6 @@ def get_rs_data():
 
 def get_dr_data(df_all):
     print("⏳ กำลังทำข้อมูล DR...")
-    # ดึง Mapping จาก Google Sheet
     url = "https://docs.google.com/spreadsheets/d/1bf6c9tJ4LwZixr7q79C1AEiDmkmoFgt7JFS3eWQTVMc/export?format=csv&gid=1600792422"
     try:
         df_map = pd.read_csv(url)
@@ -78,14 +95,17 @@ def get_dr_data(df_all):
         print("⚠️ ไม่สามารถดึง Google Sheet Mapping ได้ (ใช้ข้อมูลดิบแทน)")
         df_map = pd.DataFrame(columns=['Symbol', 'Underlying', 'Country'])
 
-    # กรองเฉพาะ DR
     if df_all.empty:
         return pd.DataFrame()
 
+    # กรองเฉพาะ DR
     df_dr = df_all[df_all['type'] == 'dr'].copy()
     
+    if df_dr.empty:
+        return pd.DataFrame()
+
     # Merge
-    if not df_map.empty:
+    if not df_map.empty and 'Symbol' in df_map.columns:
         df_merged = pd.merge(
             df_dr, df_map[['Symbol', 'Underlying', 'Country']],
             left_on='name', right_on='Symbol', how='left'
@@ -130,7 +150,10 @@ def main():
     df_raw = get_rs_data()
     
     if df_raw.empty:
-        print("❌ ไม่พบข้อมูลหุ้น จบการทำงาน")
+        print("❌ ไม่พบข้อมูลหุ้น หรือเกิดข้อผิดพลาดในการดึงข้อมูล จบการทำงาน")
+        # สร้าง HTML เปล่าๆ แจ้งเตือนแทนการ Error
+        with open("index.html", "w", encoding="utf-8") as f:
+            f.write("<h1>Error: No Data Found</h1><p>Please check GitHub Action logs.</p>")
         return
 
     # --- ตาราง RS Ranking ---
@@ -167,7 +190,7 @@ def main():
     # 2. แปลงเป็น HTML Table (Clean)
     table_rs_html = df_rs_final.to_html(index=False, table_id="rsTable", classes="display compact", border=0)
 
-    # 3. เขียนไฟล์ HTML Template (ฝัง JS DataTables เพื่อให้เสิช/กรองได้)
+    # 3. เขียนไฟล์ HTML Template
     html_content = f"""
     <!DOCTYPE html>
     <html lang="th">
