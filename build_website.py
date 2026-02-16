@@ -29,47 +29,44 @@ def get_rs_data():
     if q is None:
         return pd.DataFrame()
 
-    # --- FIX START: แก้ไขการจัดการข้อมูลที่ส่งกลับมา ---
-    # 1. แกะข้อมูลออกจาก Tuple (ถ้ามี)
+    # --- จัดการข้อมูลที่ส่งกลับมา ---
     if isinstance(q, tuple):
         raw_data = q[1]
     else:
         raw_data = q
 
-    # 2. แปลงเป็น DataFrame อย่างระมัดระวัง
     if isinstance(raw_data, pd.DataFrame):
-        # กรณีที่ Library ส่ง DataFrame มาให้เลย
-        if raw_data.empty:
-            return pd.DataFrame()
+        if raw_data.empty: return pd.DataFrame()
         df = raw_data.copy()
     else:
-        # กรณีที่เป็น List
-        if not raw_data:
-            return pd.DataFrame()
-        
-        # ลองแปลง List เป็น DataFrame
+        if not raw_data: return pd.DataFrame()
         try:
-            # แบบปกติ: ข้อมูลซ่อนอยู่ใน key 'd'
             df = pd.DataFrame([row['d'] for row in raw_data])
         except (KeyError, TypeError):
-            # แบบสำรอง: ข้อมูลมาเป็น dict เลย
             df = pd.DataFrame(raw_data)
-    # --- FIX END ---
 
-    # กรองหุ้น: ตัด -R, -F, ราคา >= 1 บาท, เอาเฉพาะ Stock และ DR
-    # ต้องเช็คก่อนว่ามี column ครบไหม
+    # --- กรองหุ้น (ตัด .R, .F ออกให้เด็ดขาด) ---
     if 'name' not in df.columns or 'close' not in df.columns:
         print("❌ Data format error: Columns not found")
         return pd.DataFrame()
 
-    mask = (
-        (~df['name'].str.endswith(('-R', '-F'))) & 
-        (df['close'] >= 1) &
-        (df['type'].isin(['stock', 'dr']))
-    )
-    df = df[mask].copy()
+    # 1. แปลงชื่อเป็น string ให้หมดก่อน
+    df['name'] = df['name'].astype(str)
+
+    # 2. สร้าง Mask สำหรับการกรอง
+    # ไม่ลงท้ายด้วย .R หรือ .F (case insensitive เผื่อไว้)
+    mask_not_rf = ~df['name'].str.upper().str.endswith(('.R', '.F'))
     
-    # คำนวณ RS Score
+    # ราคา >= 1
+    mask_price = df['close'] >= 1
+    
+    # ประเภท Stock หรือ DR
+    mask_type = df['type'].isin(['stock', 'dr'])
+    
+    # รวมเงื่อนไข
+    df = df[mask_not_rf & mask_price & mask_type].copy()
+    
+    # --- คำนวณ RS Score ---
     weights = {'Perf.W': 0.10, 'Perf.1M': 0.20, 'Perf.3M': 0.30, 'Perf.6M': 0.25, 'Perf.Y': 0.15}
     df['rs_weight'] = 0
     for col_name, w in weights.items():
@@ -78,11 +75,14 @@ def get_rs_data():
             
     df['rs_rank'] = df['rs_weight'].rank(pct=True) * 100
     
-    # แบ่งกลุ่ม (Bins)
+    # --- แบ่งกลุ่ม (Bins) ---
     bins = [0, 80, 85, 90, 95, 101]
     labels = ['RS Below 80', 'RS80-85', 'RS85-90', 'RS90-95', 'RS95-100']
     df['rs_category'] = pd.cut(df['rs_rank'], bins=bins, labels=labels)
     
+    # แปลง Category เป็น String เพื่อให้แสดงผลใน HTML ได้ถูกต้อง (ไม่บั๊ก JavaScript)
+    df['rs_category'] = df['rs_category'].astype(str)
+
     print(f"✅ ดึงข้อมูลสำเร็จ: {len(df)} หุ้น")
     return df
 
@@ -92,14 +92,15 @@ def get_dr_data(df_all):
     try:
         df_map = pd.read_csv(url)
     except:
-        print("⚠️ ไม่สามารถดึง Google Sheet Mapping ได้ (ใช้ข้อมูลดิบแทน)")
+        print("⚠️ ไม่สามารถดึง Google Sheet Mapping ได้")
         df_map = pd.DataFrame(columns=['Symbol', 'Underlying', 'Country'])
 
     if df_all.empty:
         return pd.DataFrame()
 
-    # กรองเฉพาะ DR
-    df_dr = df_all[df_all['type'] == 'dr'].copy()
+    # กรองเฉพาะ DR และตัด .R .F ออกอีกรอบเพื่อความชัวร์
+    mask_dr = (df_all['type'] == 'dr') & (~df_all['name'].str.upper().str.endswith(('.R', '.F')))
+    df_dr = df_all[mask_dr].copy()
     
     if df_dr.empty:
         return pd.DataFrame()
@@ -116,10 +117,8 @@ def get_dr_data(df_all):
         df_merged['Underlying'] = '-'
     
     # เติมค่าว่าง
-    if 'Country' in df_merged.columns:
-        df_merged['Country'] = df_merged['Country'].fillna('Unknown')
-    if 'Underlying' in df_merged.columns:
-        df_merged['Underlying'] = df_merged['Underlying'].fillna('-')
+    df_merged['Country'] = df_merged['Country'].fillna('Unknown')
+    df_merged['Underlying'] = df_merged['Underlying'].fillna('-')
     
     return df_merged
 
@@ -127,14 +126,23 @@ def get_dr_data(df_all):
 # 2. ส่วนจัดรูปแบบ (Formatting)
 # ==========================================
 
-def format_df(df, cols_to_keep, rename_dict):
-    # เลือก Column (เฉพาะที่มีอยู่จริง กัน Error)
+def format_df(df, cols_to_keep, rename_dict, volume_col='volume'):
+    # เลือก Column
     valid_cols = [c for c in cols_to_keep if c in df.columns]
     df_out = df[valid_cols].copy()
     
-    # ปัดทศนิยม 2 ตำแหน่ง
+    # --- จัดรูปแบบ Volume (แปลงเป็น MB) ---
+    if volume_col in df_out.columns:
+        # หารล้าน และใส่ทศนิยม 2 ตำแหน่ง
+        df_out[volume_col] = df_out[volume_col].apply(lambda x: f"{x/1_000_000:,.2f} MB" if pd.notnull(x) else "-")
+
+    # --- จัดรูปแบบตัวเลขอื่นๆ ---
     for c in df_out.columns:
-        if df_out[c].dtype in ['float64', 'float32']:
+        # ข้าม Volume เพราะทำไปแล้ว, ข้าม Text columns
+        if c == volume_col or df_out[c].dtype == 'object':
+            continue
+            
+        if df_out[c].dtype in ['float64', 'float32', 'int64']:
             df_out[c] = df_out[c].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) else "-")
             
     # เปลี่ยนชื่อ Column
@@ -150,13 +158,15 @@ def main():
     df_raw = get_rs_data()
     
     if df_raw.empty:
-        print("❌ ไม่พบข้อมูลหุ้น หรือเกิดข้อผิดพลาดในการดึงข้อมูล จบการทำงาน")
-        # สร้าง HTML เปล่าๆ แจ้งเตือนแทนการ Error
+        print("❌ ไม่พบข้อมูลหุ้น")
         with open("index.html", "w", encoding="utf-8") as f:
-            f.write("<h1>Error: No Data Found</h1><p>Please check GitHub Action logs.</p>")
+            f.write("<h1>Error: No Data Found</h1>")
         return
 
     # --- ตาราง RS Ranking ---
+    # เรียงลำดับ RS Score มาก -> น้อย
+    df_rs = df_raw.sort_values('rs_rank', ascending=False)
+
     rs_cols = [
         'name', 'sector', 'close', 'change', 'volume', 
         'EMA10', 'EMA50', 'rs_rank', 'rs_category',
@@ -165,13 +175,12 @@ def main():
     ]
     rs_rename = {
         'name': 'Symbol', 'sector': 'Sector', 'close': 'Price', 'change': '%Change',
-        'volume': 'Volume', 'rs_rank': 'RS Score', 'rs_category': 'Group',
+        'volume': 'Volume (MB)', 'rs_rank': 'RS Score', 'rs_category': 'Group',
         'total_revenue_qoq_growth_fq': 'Rev QoQ%', 'total_revenue_yoy_growth_fq': 'Rev YoY%',
         'net_income_qoq_growth_fq': 'Net QoQ%', 'net_income_yoy_growth_fq': 'Net YoY%'
     }
     
-    df_rs = df_raw.sort_values('rs_rank', ascending=False)
-    df_rs_final = format_df(df_rs, rs_cols, rs_rename)
+    df_rs_final = format_df(df_rs, rs_cols, rs_rename, volume_col='volume')
     
     # --- ตาราง DR Scan ---
     df_dr_raw = get_dr_data(df_raw)
@@ -182,15 +191,17 @@ def main():
     }
     
     if not df_dr_raw.empty:
+        # เรียงลำดับตาม 1M %
+        df_dr_raw = df_dr_raw.sort_values('Perf.1M', ascending=False)
         df_dr_final = format_df(df_dr_raw, dr_cols, dr_rename)
         table_dr_html = df_dr_final.to_html(index=False, table_id="drTable", classes="display compact", border=0)
     else:
         table_dr_html = "<p>ไม่พบข้อมูล DR</p>"
 
-    # 2. แปลงเป็น HTML Table (Clean)
     table_rs_html = df_rs_final.to_html(index=False, table_id="rsTable", classes="display compact", border=0)
 
     # 3. เขียนไฟล์ HTML Template
+    # เพิ่ม Script แก้ไขปัญหา Filter ไม่ทำงาน (ใช้ Regular Expression Search)
     html_content = f"""
     <!DOCTYPE html>
     <html lang="th">
@@ -205,20 +216,14 @@ def main():
             body {{ font-family: 'Sarabun', sans-serif; background-color: #f4f6f9; margin: 0; padding: 20px; }}
             .container {{ max-width: 1400px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
             h1, h2 {{ color: #2c3e50; }}
-            
-            /* Tabs Style */
             .tab {{ overflow: hidden; border-bottom: 1px solid #ccc; margin-bottom: 20px; }}
             .tab button {{ background-color: inherit; float: left; border: none; outline: none; cursor: pointer; padding: 14px 16px; transition: 0.3s; font-size: 16px; font-weight: bold; color: #555; }}
             .tab button:hover {{ background-color: #ddd; }}
             .tab button.active {{ background-color: #3498db; color: white; }}
             .tabcontent {{ display: none; animation: fadeEffect 1s; }}
             @keyframes fadeEffect {{ from {{opacity: 0;}} to {{opacity: 1;}} }}
-
-            /* Table Style */
             table.dataTable thead th {{ background-color: #34495e; color: white; text-align: center !important; }}
             table.dataTable tbody td {{ text-align: center !important; }}
-            
-            /* Filter Dropdown */
             .filter-box {{ margin-bottom: 15px; padding: 10px; background: #ecf0f1; border-radius: 5px; }}
         </style>
     </head>
@@ -264,7 +269,7 @@ def main():
                 <b>🔍 Filter Country: </b>
                 <select id="countryFilter" style="padding: 5px;">
                     <option value="">Show All</option>
-                    </select>
+                </select>
             </div>
             {table_dr_html}
         </div>
@@ -274,7 +279,6 @@ def main():
     <script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
     
     <script>
-        // Tab Logic
         function openTab(evt, tabName) {{
             var i, tabcontent, tablinks;
             tabcontent = document.getElementsByClassName("tabcontent");
@@ -287,29 +291,33 @@ def main():
         document.getElementById("defaultOpen").click();
 
         $(document).ready(function() {{
-            // 1. Setup RS Table
+            // --- 1. Setup RS Table ---
             var tableRS = $('#rsTable').DataTable({{
                 "pageLength": 25,
-                "order": [[ 5, "desc" ]] // Sort by RS Score (col index 5) default
+                "order": [], // ปิด Auto Sort ของ JS เพื่อให้ใช้ลำดับจาก Python (RS มากสุดบนสุด)
+                "columnDefs": [
+                    {{ "targets": 4, "type": "num-fmt" }} // บอกว่า Volume (col 4) เป็นตัวเลขที่มี comma/MB
+                ]
             }});
             
-            // Custom Filter for RS
+            // Custom Filter for RS (ใช้ Exact Match เพื่อแก้ปัญหา Not matching)
             $('#rsFilter').on('change', function() {{
-                tableRS.column(6).search(this.value).draw(); // RS Group is at col index 6
+                var val = $.fn.dataTable.util.escapeRegex($(this).val());
+                // ค้นหาแบบ Exact Match (^...$) ถ้าเลือก All ให้ค้นหา empty string
+                tableRS.column(6).search(val ? '^'+val+'$' : '', true, false).draw();
             }});
 
-            // 2. Setup DR Table
-            var tableDR = $('#drTable').DataTable({{ "pageLength": 25 }});
+            // --- 2. Setup DR Table ---
+            var tableDR = $('#drTable').DataTable({{ "pageLength": 25, "order": [] }});
             
-            // Populate Country Filter automatically
-            var countries = tableDR.column(3).data().unique().sort(); // Country is at col index 3
+            var countries = tableDR.column(3).data().unique().sort();
             $.each(countries, function(index, value) {{
                 if(value) $('#countryFilter').append('<option value="'+value+'">'+value+'</option>');
             }});
             
-            // Custom Filter for Country
             $('#countryFilter').on('change', function() {{
-                tableDR.column(3).search(this.value).draw();
+                var val = $.fn.dataTable.util.escapeRegex($(this).val());
+                tableDR.column(3).search(val ? '^'+val+'$' : '', true, false).draw();
             }});
         }});
     </script>
@@ -318,7 +326,6 @@ def main():
     </html>
     """
     
-    # Save File
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html_content)
     print("✅ สร้างไฟล์ index.html เรียบร้อย!")
