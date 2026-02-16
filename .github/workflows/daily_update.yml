@@ -1,0 +1,39 @@
+name: Daily Stock Update
+
+on:
+  schedule:
+    # ตั้งเวลา 10:00 UTC คือ 17:00 (5 โมงเย็น) เวลาไทย
+    - cron: '0 10 * * *'
+  # เพิ่มปุ่มกดรันมือ (เผื่อใจร้อนอยากกดอัปเดตเอง)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run script to generate HTML
+        run: |
+          python build_website.py
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "action@github.com"
+          git add index.html
+          git commit -m "Auto update stock data" || echo "No changes to commit"
+          git push
